@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target
+
+# Local environment configuration
+.env
+
+# Database file
+contracts.db
+*.db
+*.db-journal
+
+# Editor and OS specific files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

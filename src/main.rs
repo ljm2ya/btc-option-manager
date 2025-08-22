@@ -10,6 +10,8 @@ use reqwest::Client;
 use std::fmt;
 // Standard library for environment variables.
 use std::env;
+// Standard library for sync primitives.
+use std::sync::Arc;
 // Dotenv for loading .env files.
 use dotenv::dotenv;
 // Rusqlite for SQLite database interaction.
@@ -18,6 +20,8 @@ use rusqlite::types::{ToSql, FromSql, ToSqlOutput, FromSqlError, ValueRef};
 
 // Module for the mock API server.
 mod mock_apis;
+// Module for the IV oracle.
+mod iv_oracle;
 
 // Represents the side of an option: Call or Put.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -117,9 +121,28 @@ async fn main() -> std::io::Result<()> {
     // Initialize the database on startup.
     init_db().unwrap();
 
+    // Initialize the IV Oracle with Deribit API.
+    let deribit_url = env::var("DERIBIT_API_URL")
+        .unwrap_or_else(|_| "https://test.deribit.com/api/v2".to_string());
+    let iv_oracle = Arc::new(iv_oracle::IvOracle::new(deribit_url));
+    
+    // Start the IV oracle updates.
+    iv_oracle.start_updates().await;
+    
+    // Do initial fetch to populate cache.
+    let oracle_clone = iv_oracle.clone();
+    tokio::spawn(async move {
+        if let Err(e) = oracle_clone.fetch_and_update_iv().await {
+            eprintln!("Error fetching initial IV data: {}", e);
+        }
+    });
+
+    let iv_oracle_clone = iv_oracle.clone();
+
     // Configure and start the main API server on port 8080.
     let server1 = HttpServer::new(move || {
         App::new()
+            .app_data(web::Data::new(iv_oracle_clone.clone()))
             // Register API endpoints and their handlers.
             .service(web::resource("/contract").route(web::post().to(post_contract)))
             .service(web::resource("/contracts").route(web::get().to(get_contracts)))
@@ -237,13 +260,12 @@ async fn get_contracts() -> impl Responder {
 
 
 // Handles GET requests to generate a table of available options.
-async fn get_options_table(req: web::Query<OptionsTableRequest>) -> impl Responder {
+async fn get_options_table(req: web::Query<OptionsTableRequest>, iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Responder {
     let client = Client::new();
 
     // Get API URLs from environment variables, with mock fallbacks.
     let pool_api_url = env::var("POOL_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/pool".to_string());
     let price_api_url = env::var("PRICE_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/price".to_string());
-    let iv_api_url = env::var("IV_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/iv".to_string());
 
     // Get financial rates from environment variables, with defaults.
     let risk_free_rate: f64 = env::var("RISK_FREE_RATE")
@@ -290,18 +312,29 @@ async fn get_options_table(req: web::Query<OptionsTableRequest>) -> impl Respond
     for strike_price in &strike_prices {
         for expire in &expires {
             for side in &sides {
-                // Fetch Implied Volatility (IV) from the API.
-                let iv: f64 = client
-                    .get(&format!(
-                        "{}?side={}&strike_price={}&expire={}",
-                        iv_api_url, side, strike_price, expire
-                    ))
-                    .send()
-                    .await
-                    .unwrap()
-                    .json()
-                    .await
-                    .unwrap();
+                // Get Implied Volatility (IV) from the oracle.
+                let side_str = match side {
+                    OptionSide::Call => "C",
+                    OptionSide::Put => "P",
+                };
+                
+                let iv = iv_oracle.get_iv(side_str, *strike_price, expire).unwrap_or_else(|| {
+                    // Fallback to mock API if not found in oracle
+                    let iv_api_url = env::var("IV_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/iv".to_string());
+                    futures::executor::block_on(async {
+                        client
+                            .get(&format!(
+                                "{}?side={}&strike_price={}&expire={}",
+                                iv_api_url, side, strike_price, expire
+                            ))
+                            .send()
+                            .await
+                            .unwrap()
+                            .json()
+                            .await
+                            .unwrap()
+                    })
+                });
 
                 // Convert duration string to a fraction of a year.
                 let t = parse_duration(expire);
@@ -356,7 +389,7 @@ fn parse_duration(duration: &str) -> f64 {
 }
 
 // Handles GET requests to calculate the total delta of all active contracts.
-async fn get_delta() -> impl Responder {
+async fn get_delta(iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Responder {
     let now = Utc::now().timestamp();
     let conn = Connection::open("contracts.db").unwrap();
 

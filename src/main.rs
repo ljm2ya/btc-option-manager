@@ -22,6 +22,8 @@ use rusqlite::types::{ToSql, FromSql, ToSqlOutput, FromSqlError, ValueRef};
 mod mock_apis;
 // Module for the IV oracle.
 mod iv_oracle;
+// Module for the price oracle.
+mod price_oracle;
 
 // Represents the side of an option: Call or Put.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -95,9 +97,49 @@ struct OptionsTableResponse {
     iv: f64,
 }
 
-// Initializes the SQLite database and creates the 'contracts' table if it doesn't exist.
+// Response structures for new endpoints
+#[derive(Serialize)]
+struct TopBannerResponse {
+    volume_24hr: f64,
+    open_interest_usd: f64,
+    contract_count: i64,
+}
+
+#[derive(Serialize)]
+struct MarketHighlightItem {
+    product_symbol: String,
+    side: OptionSide,
+    strike_price: f64,
+    expire: String,
+    volume_24hr: f64,
+    price_change_24hr_percent: f64,
+}
+
+#[derive(Serialize)]
+struct TopGainerItem {
+    product_symbol: String,
+    side: OptionSide,
+    strike_price: f64,
+    expire: String,
+    change_24hr_percent: f64,
+    last_price: f64,
+}
+
+#[derive(Serialize)]
+struct TopVolumeItem {
+    product_symbol: String,
+    side: OptionSide,
+    strike_price: f64,
+    expire: String,
+    volume_usd: f64,
+    last_price: f64,
+}
+
+// Initializes the SQLite database and creates the tables if they don't exist.
 fn init_db() -> Result<Connection> {
     let conn = Connection::open("contracts.db")?;
+    
+    // Create contracts table with timestamp
     conn.execute(
         "CREATE TABLE IF NOT EXISTS contracts (
             id INTEGER PRIMARY KEY,
@@ -105,10 +147,40 @@ fn init_db() -> Result<Connection> {
             strike_price REAL NOT NULL,
             quantity REAL NOT NULL,
             expires INTEGER NOT NULL,
-            premium REAL NOT NULL
+            premium REAL NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         )",
         [],
     )?;
+    
+    // Add created_at column to existing contracts table if it doesn't exist
+    let _ = conn.execute("ALTER TABLE contracts ADD COLUMN created_at INTEGER DEFAULT (strftime('%s', 'now'))", []);
+    
+    // Create premium history table for tracking price movements
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS premium_history (
+            id INTEGER PRIMARY KEY,
+            product_key TEXT NOT NULL,
+            side TEXT NOT NULL,
+            strike_price REAL NOT NULL,
+            expires INTEGER NOT NULL,
+            premium REAL NOT NULL,
+            timestamp INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            UNIQUE(product_key, timestamp)
+        )",
+        [],
+    )?;
+    
+    // Create index for efficient queries
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contracts_created_at ON contracts(created_at)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_premium_history_product ON premium_history(product_key, timestamp)",
+        [],
+    )?;
+    
     Ok(conn)
 }
 
@@ -123,7 +195,7 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize the IV Oracle with Deribit API.
     let deribit_url = env::var("DERIBIT_API_URL")
-        .unwrap_or_else(|_| "https://test.deribit.com/api/v2".to_string());
+        .unwrap_or_else(|_| "https://www.deribit.com/api/v2".to_string());
     let iv_oracle = Arc::new(iv_oracle::IvOracle::new(deribit_url));
     
     // Start the IV oracle updates.
@@ -136,18 +208,30 @@ async fn main() -> std::io::Result<()> {
             eprintln!("Error fetching initial IV data: {}", e);
         }
     });
+    
+    // Initialize the Price Oracle
+    let price_api_url = env::var("PRICE_API_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8081/price".to_string());
+    let price_oracle = Arc::new(price_oracle::PriceOracle::new(price_api_url));
 
     let iv_oracle_clone = iv_oracle.clone();
+    let price_oracle_clone = price_oracle.clone();
 
     // Configure and start the main API server on port 8080.
     let server1 = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(iv_oracle_clone.clone()))
+            .app_data(web::Data::new(price_oracle_clone.clone()))
             // Register API endpoints and their handlers.
             .service(web::resource("/contract").route(web::post().to(post_contract)))
             .service(web::resource("/contracts").route(web::get().to(get_contracts)))
             .service(web::resource("/optionsTable").route(web::get().to(get_options_table)))
             .service(web::resource("/delta").route(web::get().to(get_delta)))
+            // New endpoints
+            .service(web::resource("/topBanner").route(web::get().to(get_top_banner)))
+            .service(web::resource("/marketHighlights").route(web::get().to(get_market_highlights)))
+            .service(web::resource("/topGainers").route(web::get().to(get_top_gainers)))
+            .service(web::resource("/topVolume").route(web::get().to(get_top_volume)))
     })
     .bind("127.0.0.1:8080")?
     .run();
@@ -162,7 +246,10 @@ async fn main() -> std::io::Result<()> {
 }
 
 // Handles POST requests to create and save a new contract.
-async fn post_contract(contract: web::Json<Contract>) -> impl Responder {
+async fn post_contract(
+    contract: web::Json<Contract>,
+    price_oracle: web::Data<Arc<price_oracle::PriceOracle>>
+) -> impl Responder {
     // --- Validation Step 1: Check Expiration ---
     let now = Utc::now().timestamp();
     if contract.expires <= now {
@@ -174,7 +261,6 @@ async fn post_contract(contract: web::Json<Contract>) -> impl Responder {
 
     // Get API URLs from environment variables, with mock fallbacks.
     let pool_api_url = env::var("POOL_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/pool".to_string());
-    let price_api_url = env::var("PRICE_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/price".to_string());
     
     // Get collateral rate from environment variables, with a default.
     let collateral_rate: f64 = env::var("COLLATERAL_RATE")
@@ -187,9 +273,9 @@ async fn post_contract(contract: web::Json<Contract>) -> impl Responder {
         Ok(res) => res.json().await.unwrap_or(0.0),
         Err(_) => return HttpResponse::InternalServerError().body("Error: Could not fetch pool quantity from API."),
     };
-    let btc_price: f64 = match client.get(&price_api_url).send().await {
-        Ok(res) => res.json().await.unwrap_or(0.0),
-        Err(_) => return HttpResponse::InternalServerError().body("Error: Could not fetch BTC price from API."),
+    let btc_price: f64 = match price_oracle.get_btc_price().await {
+        Ok(price) => price,
+        Err(_) => return HttpResponse::InternalServerError().body("Error: Could not fetch BTC price from oracle."),
     };
 
     // Calculate total available collateral.
@@ -231,6 +317,20 @@ async fn post_contract(contract: web::Json<Contract>) -> impl Responder {
         ],
     )
     .unwrap();
+    
+    // Also save to premium history for price tracking
+    let product_key = format!("{}-{}-{}", contract.side, contract.strike_price, contract.expires);
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO premium_history (product_key, side, strike_price, expires, premium) 
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            product_key,
+            contract.side,
+            contract.strike_price,
+            contract.expires,
+            contract.premium
+        ],
+    );
 
     HttpResponse::Ok().finish()
 }
@@ -260,7 +360,11 @@ async fn get_contracts() -> impl Responder {
 
 
 // Handles GET requests to generate a table of available options.
-async fn get_options_table(req: web::Query<OptionsTableRequest>, iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Responder {
+async fn get_options_table(
+    req: web::Query<OptionsTableRequest>, 
+    iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>,
+    price_oracle: web::Data<Arc<price_oracle::PriceOracle>>
+) -> impl Responder {
     let client = Client::new();
 
     // Get API URLs from environment variables, with mock fallbacks.
@@ -286,14 +390,7 @@ async fn get_options_table(req: web::Query<OptionsTableRequest>, iv_oracle: web:
         .json()
         .await
         .unwrap();
-    let btc_price: f64 = client
-        .get(&price_api_url)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let btc_price: f64 = price_oracle.get_btc_price().await.unwrap_or(0.0);
 
     let mut table = Vec::new();
 
@@ -389,7 +486,10 @@ fn parse_duration(duration: &str) -> f64 {
 }
 
 // Handles GET requests to calculate the total delta of all active contracts.
-async fn get_delta(iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Responder {
+async fn get_delta(
+    iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>,
+    price_oracle: web::Data<Arc<price_oracle::PriceOracle>>
+) -> impl Responder {
     let now = Utc::now().timestamp();
     let conn = Connection::open("contracts.db").unwrap();
 
@@ -418,7 +518,6 @@ async fn get_delta(iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Respo
     let client = Client::new();
 
     // Get API URLs and risk-free rate from environment variables.
-    let price_api_url = env::var("PRICE_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/price".to_string());
     let iv_api_url = env::var("IV_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8081/iv".to_string());
     
     let risk_free_rate: f64 = env::var("RISK_FREE_RATE")
@@ -427,14 +526,7 @@ async fn get_delta(iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Respo
         .unwrap_or(0.0);
 
     // Fetch the current asset price.
-    let btc_price: f64 = client
-        .get(&price_api_url)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let btc_price: f64 = price_oracle.get_btc_price().await.unwrap_or(0.0);
 
     let mut total_delta = 0.0;
 
@@ -467,4 +559,283 @@ async fn get_delta(iv_oracle: web::Data<Arc<iv_oracle::IvOracle>>) -> impl Respo
     }
 
     HttpResponse::Ok().json(total_delta)
+}
+
+// Handles GET requests for the top banner information.
+async fn get_top_banner(price_oracle: web::Data<Arc<price_oracle::PriceOracle>>) -> impl Responder {
+    let now = Utc::now().timestamp();
+    let twenty_four_hours_ago = now - (24 * 60 * 60);
+    
+    let conn = Connection::open("contracts.db").unwrap();
+    
+    // Get 24hr trading volume (sum of quantities in last 24 hours)
+    let volume_24hr: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(quantity), 0.0) FROM contracts WHERE created_at >= ?1",
+            params![twenty_four_hours_ago],
+            |row| row.get(0),
+        )
+        .unwrap_or(0.0);
+    
+    // Get open interest (all non-expired contracts) and calculate USD value
+    let mut stmt = conn
+        .prepare("SELECT quantity, premium FROM contracts WHERE expires > ?1")
+        .unwrap();
+    
+    let contracts_iter = stmt.query_map(params![now], |row| {
+        Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?))
+    }).unwrap();
+    
+    let mut open_interest_btc = 0.0;
+    for contract in contracts_iter {
+        if let Ok((quantity, premium)) = contract {
+            open_interest_btc += quantity * premium;
+        }
+    }
+    
+    // Get current BTC price to convert to USD
+    let btc_price = price_oracle.get_btc_price().await.unwrap_or(0.0);
+    let open_interest_usd = open_interest_btc * btc_price;
+    
+    // Get number of open contracts
+    let contract_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contracts WHERE expires > ?1",
+            params![now],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    
+    let response = TopBannerResponse {
+        volume_24hr,
+        open_interest_usd,
+        contract_count,
+    };
+    
+    HttpResponse::Ok().json(response)
+}
+
+// Handles GET requests for market highlights (top 6 volume products).
+async fn get_market_highlights(price_oracle: web::Data<Arc<price_oracle::PriceOracle>>) -> impl Responder {
+    let now = Utc::now().timestamp();
+    let twenty_four_hours_ago = now - (24 * 60 * 60);
+    
+    let conn = Connection::open("contracts.db").unwrap();
+    
+    // Get top 6 products by 24hr volume
+    let mut stmt = conn
+        .prepare(
+            "SELECT side, strike_price, expires, SUM(quantity) as total_volume, AVG(premium) as avg_premium
+             FROM contracts 
+             WHERE created_at >= ?1
+             GROUP BY side, strike_price, expires
+             ORDER BY total_volume DESC
+             LIMIT 6"
+        )
+        .unwrap();
+    
+    let products_iter = stmt.query_map(params![twenty_four_hours_ago], |row| {
+        Ok((
+            row.get::<_, OptionSide>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+        ))
+    }).unwrap();
+    
+    let mut highlights = Vec::new();
+    
+    for product in products_iter {
+        if let Ok((side, strike_price, expires, volume, current_premium)) = product {
+            // Generate product key
+            let product_key = format!("{}-{}-{}", side, strike_price, expires);
+            
+            // Get premium from 24 hours ago from history table
+            let premium_24hr_ago: Option<f64> = conn
+                .query_row(
+                    "SELECT premium FROM premium_history 
+                     WHERE product_key = ?1 AND timestamp <= ?2 
+                     ORDER BY timestamp DESC LIMIT 1",
+                    params![&product_key, twenty_four_hours_ago],
+                    |row| row.get(0),
+                )
+                .ok();
+            
+            let price_change_percent = if let Some(old_premium) = premium_24hr_ago {
+                if old_premium > 0.0 {
+                    ((current_premium - old_premium) / old_premium) * 100.0
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+            
+            // Convert expires timestamp to string representation
+            let expire_string = format_expires_timestamp(expires);
+            
+            highlights.push(MarketHighlightItem {
+                product_symbol: format!("BTC-{}-{}-{}", expire_string, strike_price, side),
+                side: side.clone(),
+                strike_price,
+                expire: expire_string,
+                volume_24hr: volume,
+                price_change_24hr_percent: price_change_percent,
+            });
+        }
+    }
+    
+    HttpResponse::Ok().json(highlights)
+}
+
+// Handles GET requests for top gainers (top 5 by 24hr % change).
+async fn get_top_gainers(price_oracle: web::Data<Arc<price_oracle::PriceOracle>>) -> impl Responder {
+    let now = Utc::now().timestamp();
+    let twenty_four_hours_ago = now - (24 * 60 * 60);
+    
+    let conn = Connection::open("contracts.db").unwrap();
+    
+    // Get all active products
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT side, strike_price, expires 
+             FROM contracts 
+             WHERE expires > ?1"
+        )
+        .unwrap();
+    
+    let products_iter = stmt.query_map(params![now], |row| {
+        Ok((
+            row.get::<_, OptionSide>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    }).unwrap();
+    
+    let mut gainers = Vec::new();
+    
+    for product in products_iter {
+        if let Ok((side, strike_price, expires)) = product {
+            // Get current premium
+            let current_premium: Option<f64> = conn
+                .query_row(
+                    "SELECT premium FROM contracts 
+                     WHERE side = ?1 AND strike_price = ?2 AND expires = ?3 
+                     ORDER BY id DESC LIMIT 1",
+                    params![&side, strike_price, expires],
+                    |row| row.get(0),
+                )
+                .ok();
+            
+            if let Some(current) = current_premium {
+                // Generate product key
+                let product_key = format!("{}-{}-{}", side, strike_price, expires);
+                
+                // Get premium from 24 hours ago
+                let premium_24hr_ago: Option<f64> = conn
+                    .query_row(
+                        "SELECT premium FROM premium_history 
+                         WHERE product_key = ?1 AND timestamp <= ?2 
+                         ORDER BY timestamp DESC LIMIT 1",
+                        params![&product_key, twenty_four_hours_ago],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                
+                if let Some(old_premium) = premium_24hr_ago {
+                    if old_premium > 0.0 {
+                        let change_percent = ((current - old_premium) / old_premium) * 100.0;
+                        let expire_string = format_expires_timestamp(expires);
+                        
+                        gainers.push(TopGainerItem {
+                            product_symbol: format!("BTC-{}-{}-{}", expire_string, strike_price, side),
+                            side: side.clone(),
+                            strike_price,
+                            expire: expire_string,
+                            change_24hr_percent: change_percent,
+                            last_price: current,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    // Sort by percentage change and take top 5
+    gainers.sort_by(|a, b| b.change_24hr_percent.partial_cmp(&a.change_24hr_percent).unwrap());
+    gainers.truncate(5);
+    
+    HttpResponse::Ok().json(gainers)
+}
+
+// Handles GET requests for top volume products (top 5 by 24hr volume).
+async fn get_top_volume(price_oracle: web::Data<Arc<price_oracle::PriceOracle>>) -> impl Responder {
+    let now = Utc::now().timestamp();
+    let twenty_four_hours_ago = now - (24 * 60 * 60);
+    
+    let conn = Connection::open("contracts.db").unwrap();
+    
+    // Get BTC price for USD conversion
+    let btc_price = price_oracle.get_btc_price().await.unwrap_or(0.0);
+    
+    // Get top 5 products by 24hr volume in USD
+    let mut stmt = conn
+        .prepare(
+            "SELECT side, strike_price, expires, SUM(quantity * premium) as total_volume_btc, AVG(premium) as avg_premium
+             FROM contracts 
+             WHERE created_at >= ?1
+             GROUP BY side, strike_price, expires
+             ORDER BY total_volume_btc DESC
+             LIMIT 5"
+        )
+        .unwrap();
+    
+    let products_iter = stmt.query_map(params![twenty_four_hours_ago], |row| {
+        Ok((
+            row.get::<_, OptionSide>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+        ))
+    }).unwrap();
+    
+    let mut top_volume = Vec::new();
+    
+    for product in products_iter {
+        if let Ok((side, strike_price, expires, volume_btc, last_premium)) = product {
+            let expire_string = format_expires_timestamp(expires);
+            
+            top_volume.push(TopVolumeItem {
+                product_symbol: format!("BTC-{}-{}-{}", expire_string, strike_price, side),
+                side: side.clone(),
+                strike_price,
+                expire: expire_string,
+                volume_usd: volume_btc * btc_price,
+                last_price: last_premium,
+            });
+        }
+    }
+    
+    HttpResponse::Ok().json(top_volume)
+}
+
+// Helper function to format expires timestamp to a readable string.
+fn format_expires_timestamp(expires: i64) -> String {
+    let now = Utc::now().timestamp();
+    let duration_seconds = expires - now;
+    
+    if duration_seconds <= 0 {
+        "EXPIRED".to_string()
+    } else if duration_seconds < 3600 {
+        let minutes = duration_seconds / 60;
+        format!("{}m", minutes)
+    } else if duration_seconds < 86400 {
+        let hours = duration_seconds / 3600;
+        format!("{}h", hours)
+    } else {
+        let days = duration_seconds / 86400;
+        format!("{}d", days)
+    }
 }

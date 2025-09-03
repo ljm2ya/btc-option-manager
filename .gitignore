@@ -15,3 +15,5 @@ contracts.db
 *.swp
 *~
 .DS_Store
+
+.serena/

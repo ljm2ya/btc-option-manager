@@ -3,6 +3,25 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::time::{interval, Duration};
+use std::hash::{Hash, Hasher};
+
+// Wrapper for f64 to use as HashMap key
+#[derive(Clone, Copy, Debug)]
+struct StrikePrice(f64);
+
+impl Hash for StrikePrice {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+impl PartialEq for StrikePrice {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for StrikePrice {}
 
 #[derive(Deserialize)]
 struct DeribitResponse {
@@ -18,7 +37,7 @@ struct OptionSummary {
 #[derive(Clone)]
 pub struct IvOracle {
     client: Client,
-    cache: Arc<RwLock<HashMap<String, HashMap<f64, HashMap<String, f64>>>>>,
+    cache: Arc<RwLock<HashMap<String, HashMap<StrikePrice, HashMap<String, f64>>>>>,
     api_url: String,
 }
 
@@ -60,7 +79,7 @@ impl IvOracle {
                 new_cache
                     .entry(expiry)
                     .or_insert_with(HashMap::new)
-                    .entry(strike)
+                    .entry(StrikePrice(strike))
                     .or_insert_with(HashMap::new)
                     .insert(side, option.mark_iv);
             }
@@ -72,12 +91,12 @@ impl IvOracle {
         Ok(())
     }
 
-    pub fn get_iv(&self, side: &str, strike_price: f64, expire: &str) -> Option<f64> {
+    pub fn get_iv(&self, side: &str, strike_price: f64, _expire: &str) -> Option<f64> {
         let cache = self.cache.read().unwrap();
         
         // Try to find matching expiry in cache
-        for (cached_expiry, strikes) in cache.iter() {
-            if let Some(sides) = strikes.get(&strike_price) {
+        for (_cached_expiry, strikes) in cache.iter() {
+            if let Some(sides) = strikes.get(&StrikePrice(strike_price)) {
                 if let Some(iv) = sides.get(side) {
                     return Some(*iv);
                 }
@@ -90,9 +109,9 @@ impl IvOracle {
     pub fn get_iv_by_exact_expiry(&self, side: &str, strike_price: f64, expire: &str) -> Option<f64> {
         let cache = self.cache.read().unwrap();
         cache.get(expire)
-            .and_then(|strikes| strikes.get(&strike_price))
+            .and_then(|strikes| strikes.get(&StrikePrice(strike_price)))
             .and_then(|sides| sides.get(side))
-            .copied()
+            .map(|iv| *iv)
     }
 }
 

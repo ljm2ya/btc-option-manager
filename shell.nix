@@ -13,6 +13,7 @@ in
       rustup
       pkg-config
       openssl
+      protobuf
     ];
     RUSTC_VERSION = overrides.toolchain.channel;
     # https://github.com/rust-lang/rust-bindgen#environment-variables

@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package oracle;
+
+// Service definition for the Oracle Aggregator (for btc-option-manager compatibility)
+service OracleAggregator {
+  // Get the current BTC price
+  rpc GetPrice(GetPriceRequestSimple) returns (GetPriceResponseSimple);
+  
+  // Health check endpoint
+  rpc HealthCheck(HealthCheckRequestSimple) returns (HealthCheckResponseSimple);
+}
+
+// Oracle Service - the actual service provided by oracle-node
+service OracleService {
+  // Submit price data
+  rpc SubmitPrice(PriceRequest) returns (PriceResponse);
+  
+  // Health check
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+  
+  // Get aggregated price
+  rpc GetAggregatedPrice(GetPriceRequest) returns (GetPriceResponse);
+}
+
+// Simple request for btc-option-manager compatibility
+message GetPriceRequestSimple {
+  string asset = 1; // Asset symbol (e.g., "BTC")
+}
+
+// Simple response for btc-option-manager compatibility
+message GetPriceResponseSimple {
+  string asset = 1;
+  double price = 2;
+  int64 timestamp = 3;
+  int32 num_sources = 4; // Number of oracle nodes that contributed
+}
+
+// Simple health check request
+message HealthCheckRequestSimple {}
+
+// Simple health check response
+message HealthCheckResponseSimple {
+  bool healthy = 1;
+  string version = 2;
+  int32 active_nodes = 3;
+}
+
+// Oracle-node types below
+
+message PriceRequest {
+  double price = 1;
+  uint64 timestamp = 2;
+  string source = 3;
+  string node_id = 4;
+  optional string signature = 5;
+}
+
+message PriceResponse {
+  bool success = 1;
+  string message = 2;
+  optional double aggregated_price = 3;
+  uint64 timestamp = 4;
+}
+
+message HealthRequest {
+  string node_id = 1;
+}
+
+message HealthResponse {
+  bool healthy = 1;
+  uint64 timestamp = 2;
+  uint32 active_nodes = 3;
+  string version = 4;
+}
+
+message GetPriceRequest {
+  optional string source_filter = 1;
+}
+
+message GetPriceResponse {
+  bool success = 1;
+  double aggregated_price = 2;
+  uint32 data_points = 3;
+  uint64 last_update = 4;
+  repeated PriceDataPoint recent_prices = 5;
+}
+
+message PriceDataPoint {
+  double price = 1;
+  uint64 timestamp = 2;
+  string source = 3;
+  string node_id = 4;
+}

@@ -9,30 +9,23 @@ struct IvRequest {
     expire: String,
 }
 
-// Mock endpoint for the liquidity pool quantity.
-async fn get_pool_qty() -> impl Responder {
-    HttpResponse::Ok().json(5.0)
-}
-
-// Mock endpoint for the current asset price.
-async fn get_price() -> impl Responder {
-    HttpResponse::Ok().json(100500.0)
-}
-
 // Mock endpoint for calculating Implied Volatility (IV).
+// This is the only remaining mock endpoint as IV data comes from Deribit,
+// but we keep this as a fallback when Deribit data is unavailable.
 async fn get_iv(req: web::Query<IvRequest>) -> impl Responder {
     // Simulate a "volatility smile" where IV increases based on distance from the current price.
-    let iv = 0.5 + (req.strike_price - 100500.0).abs() / 100500.0 * 0.1;
+    // Using a base price of 50000 as a reasonable BTC price estimate
+    let base_price = 50000.0;
+    let iv = 0.5 + (req.strike_price - base_price).abs() / base_price * 0.1;
     HttpResponse::Ok().json(iv)
 }
 
 // Main function for the mock server.
-// Runs a separate server on port 8081 to provide simulated financial data.
+// Runs a separate server on port 8081 to provide fallback IV data.
+// Pool data now comes from Mutiny wallet and price data from gRPC oracle.
 pub async fn mock_server() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
-            .service(web::resource("/pool").route(web::get().to(get_pool_qty)))
-            .service(web::resource("/price").route(web::get().to(get_price)))
             .service(web::resource("/iv").route(web::get().to(get_iv)))
     })
     .bind("127.0.0.1:8081")?

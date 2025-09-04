@@ -1,253 +1,120 @@
 # BTC Options API
 
-This project provides a web API for calculating and managing Bitcoin options contracts. It uses the Black-Scholes model for financial calculations and features a mock backend for simulating real-time financial data, making it a self-contained and easy-to-run application.
+A web API for calculating and managing Bitcoin options contracts using the Black-Scholes model. Built with Rust and Actix-web, featuring real-time market data integration and comprehensive trading history tracking.
 
-The application is built in Rust using the Actix web framework and stores contract data in a local SQLite database with comprehensive tracking of trading history and market metrics.
+## Quick Start
 
-## Code Structure
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd btc-option-manager
+   ```
 
-The project is organized into several Rust modules:
+2. **Set up environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env and set your POOL_ADDRESS
+   ```
 
--   `src/main.rs`: The core application that runs the main API server, defines data structures (like `Contract` and `OptionSide`), handles web requests, manages database operations, and performs financial calculations.
--   `src/mock_apis.rs`: Runs a mock API server on port 8081 to simulate real-world financial data services (BTC price, implied volatility, liquidity pool data).
--   `src/iv_oracle.rs`: Manages implied volatility data by fetching from Deribit API with caching and automatic updates every 15 seconds.
--   `src/price_oracle.rs`: Handles BTC price fetching with caching support and future gRPC integration capability.
+3. **Run the application:**
+   ```bash
+   cargo run
+   ```
 
-## Environment Configuration
+The API will be available at:
+- Main API: `http://localhost:8080`
+- Mock IV Server: `http://localhost:8081`
 
-The application is configured using a `.env` file in the root of the project. This file allows you to easily change key parameters without modifying the code.
+## Documentation
 
-Create a file named `.env` and add the following variables:
+- [📦 Installation Guide](docs/INSTALL.md) - Platform-specific setup instructions
+- [🛠️ Development Guide](docs/CLAUDE.md) - Development workflow and architecture
+- [📡 API Reference](docs/API_REFERENCE.md) - Complete endpoint documentation
+- [🔮 Oracle Setup Guide](docs/ORACLE_SETUP.md) - gRPC oracle aggregator setup
+- [🏦 Mutiny Wallet Guide](docs/MUTINY_WALLET_GUIDE.md) - Bitcoin wallet integration
+- [🔍 External API Report](docs/EXTERNAL_API_TEST_REPORT.md) - Service dependencies & testing
 
-```
-RISK_FREE_RATE=0.05
-COLLATERAL_RATE=0.5
+## Core Features
 
-# API URLs
-# By default, these point to the local mock server.
-# You can change them to point to real financial data APIs.
-POOL_API_URL=http://127.0.0.1:8081/pool
-PRICE_API_URL=http://127.0.0.1:8081/price
-IV_API_URL=http://127.0.0.1:8081/iv
-DERIBIT_API_URL=https://www.deribit.com/api/v2
-
-# Oracle Configuration (for future gRPC integration)
-AGGREGATOR_URL=http://localhost:50051
-```
-
--   `RISK_FREE_RATE`: The risk-free interest rate, used in the Black-Scholes calculation. (e.g., `0.05` for 5%).
--   `COLLATERAL_RATE`: A factor used to determine the maximum tradeable quantity based on the available liquidity.
--   `POOL_API_URL`, `PRICE_API_URL`, `IV_API_URL`: These are the URLs the application will call to get financial data. If you don't set them, they will default to using the mock server running on port 8081.
--   `DERIBIT_API_URL`: URL for fetching real-time implied volatility data from Deribit exchange.
--   `AGGREGATOR_URL`: gRPC endpoint for the BTC oracle node (future integration).
-
-## Requirements
-
-To build and run this project, you will need:
-
--   [Rust](https://www.rust-lang.org/tools/install) (latest stable version recommended)
--   `curl` or a similar tool for testing the API from the command line
-
-### System Dependencies
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install build-essential pkg-config libssl-dev
-```
-
-**macOS (with Homebrew):**
-```bash
-brew install pkg-config openssl
-```
-
-**Windows:**
-- Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) or Visual Studio
-- OpenSSL is typically bundled with Rust on Windows
-
-**NixOS/Nix Users:**
-- Use the provided `shell.nix` for automatic dependency management
-
-The project uses:
-- Bundled SQLite (no separate installation needed)
-- OpenSSL for secure connections (install via system package manager)
-- gRPC dependencies (tonic, prost) for future oracle integration
-
-## How to Run
-
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd btc_options_api
-    ```
-
-2.  **(Optional) Create the `.env` file:**
-    Create a `.env` file in the project root and customize the configuration variables as described above.
-
-3.  **Build and Run the Server:**
-    Use Cargo to build and run the application. This will start both the main API server (on port 8080) and the mock API server (on port 8081).
-    
-    **Standard method:**
-    ```bash
-    cargo run
-    ```
-    
-    **For NixOS/Nix users:**
-    ```bash
-    nix-shell
-    cargo run
-    ```
+- **Black-Scholes Options Pricing** - Real-time options valuation
+- **Market Data Integration** - Live BTC price via gRPC oracle, Deribit IV data
+- **Portfolio Management** - Track contracts, calculate delta, monitor positions
+- **Market Analytics** - 24hr volume, top gainers, market highlights
+- **Wallet Integration** - Real Bitcoin pool balance via Mutiny wallet
 
 ## API Endpoints
 
-Once the server is running, you can interact with the following endpoints.
+### Trading Endpoints
+- `GET /optionsTable` - Generate available options with pricing
+- `POST /contract` - Create new options contract
+- `GET /delta` - Calculate total portfolio delta
+- `GET /contracts` - List all contracts (debug)
 
-### `GET /optionsTable`
+### Market Analytics
+- `GET /topBanner` - 24hr volume, open interest, contract count
+- `GET /marketHighlights` - Top 6 products by volume
+- `GET /topGainers` - Top 5 products by price change
+- `GET /topVolume` - Top 5 products by USD volume
 
-Generates a table of available Call and Put options based on the provided strike prices and expiration dates.
+## Architecture
 
-**Query Parameters:**
+```
+src/
+├── main.rs         # API server and endpoints
+├── price_oracle.rs # gRPC price oracle client
+├── iv_oracle.rs    # Deribit IV data with caching
+├── mutiny_wallet.rs # Bitcoin wallet integration
+├── db.rs           # Database operations
+└── mock_apis.rs    # Fallback IV data server
+```
 
--   `strike_prices`: A comma-separated list of strike prices (e.g., `100000,110000`).
--   `expires`: A comma-separated list of expiration durations (e.g., `1d,7d,30m`).
+## External Dependencies
 
-**Example Request:**
+1. **BTC Price Oracle** (Required)
+   - gRPC service on `localhost:50051`
+   - Provides real-time BTC price data
+   - See [External API Report](docs/EXTERNAL_API_TEST_REPORT.md) for details
+
+2. **Mutiny Wallet API**
+   - Fetches real Bitcoin pool balance
+   - Supports mainnet/testnet/signet
+
+3. **Deribit API**
+   - Real-time implied volatility data
+   - Falls back to mock API if unavailable
+
+## Configuration
+
+Create `.env` file with:
+
+```env
+# Core Settings
+RISK_FREE_RATE=0.05      # Risk-free rate for Black-Scholes
+COLLATERAL_RATE=0.5      # Max tradeable % of pool
+
+# Wallet Configuration
+POOL_ADDRESS=your_btc_address_here  # Required
+POOL_NETWORK=signet                 # mainnet/testnet/signet
+
+# External Services
+AGGREGATOR_URL=http://localhost:50051  # gRPC price oracle
+DERIBIT_API_URL=https://www.deribit.com/api/v2
+IV_API_URL=http://127.0.0.1:8081/iv   # Fallback IV
+```
+
+## Testing
 
 ```bash
-curl "http://127.0.0.1:8080/optionsTable?strike_prices=100000,110000&expires=1d,7d"
+# Run all tests
+cargo test
+
+# Run integration tests (requires external services)
+cargo test -- --ignored
+
+# Test with real wallet
+./test_with_real_wallet.sh
 ```
 
-### `POST /contract`
+## License
 
-Creates and saves a new options contract to the database.
-
-**Request Body (JSON):**
-
-```json
-{
-  "side": "Call",
-  "strike_price": 110000.0,
-  "quantity": 1.5,
-  "expires": 1735689600,
-  "premium": 5000.0
-}
-```
-
--   `expires` must be a future Unix timestamp.
-
-**Example Request (Windows cmd):**
-
-```bash
-curl -X POST http://127.0.0.1:8080/contract -H "Content-Type: application/json" -d "{\"side\": \"Call\", \"strike_price\": 110000.0, \"quantity\": 1.5, \"expires\": 1735689600, \"premium\": 5000.0}"
-```
-
-### `GET /delta`
-
-Calculates and returns the total delta for all non-expired contracts currently in the database.
-
-**Example Request:**
-
-```bash
-curl http://127.0.0.1:8080/delta
-```
-
-### `GET /contracts`
-
-A debugging endpoint that returns a list of all contracts currently stored in the database.
-
-**Example Request:**
-
-```bash
-curl http://127.0.0.1:8080/contracts
-```
-
-### `GET /topBanner`
-
-Returns key market statistics for the trading interface banner.
-
-**Response Fields:**
-- `volume_24hr`: Total trading volume in the last 24 hours (sum of all contract quantities)
-- `open_interest_usd`: Total value of all open (non-expired) contracts in USD
-- `contract_count`: Number of open contracts
-
-**Example Request:**
-
-```bash
-curl http://127.0.0.1:8080/topBanner
-```
-
-### `GET /marketHighlights`
-
-Returns the top 6 products by 24-hour trading volume with price movement data.
-
-**Response Fields (array of items):**
-- `product_symbol`: Product identifier (format: BTC-{expire}-{strike}-{side})
-- `side`: Option type (Call/Put)
-- `strike_price`: Strike price
-- `expire`: Expiration time (e.g., "1d", "7h", "30m")
-- `volume_24hr`: 24-hour trading volume
-- `price_change_24hr_percent`: Premium price change percentage over 24 hours
-
-**Example Request:**
-
-```bash
-curl http://127.0.0.1:8080/marketHighlights
-```
-
-### `GET /topGainers`
-
-Returns the top 5 products by 24-hour percentage change.
-
-**Response Fields (array of items):**
-- `product_symbol`: Product identifier
-- `side`: Option type
-- `strike_price`: Strike price
-- `expire`: Expiration time
-- `change_24hr_percent`: 24-hour price change percentage
-- `last_price`: Latest premium price
-
-**Example Request:**
-
-```bash
-curl http://127.0.0.1:8080/topGainers
-```
-
-### `GET /topVolume`
-
-Returns the top 5 products by 24-hour trading volume in USD.
-
-**Response Fields (array of items):**
-- `product_symbol`: Product identifier
-- `side`: Option type
-- `strike_price`: Strike price
-- `expire`: Expiration time
-- `volume_usd`: 24-hour trading volume in USD
-- `last_price`: Latest premium price
-
-**Example Request:**
-
-```bash
-curl http://127.0.0.1:8080/topVolume
-```
-
-## Database Schema
-
-The application uses SQLite with two main tables:
-
-### contracts
-Stores all option contracts with:
-- `id`: Primary key
-- `side`: Option type (Call/Put)
-- `strike_price`: Strike price
-- `quantity`: Contract quantity
-- `expires`: Expiration timestamp
-- `premium`: Premium price
-- `created_at`: Creation timestamp (for 24hr calculations)
-
-### premium_history
-Tracks premium price history for products:
-- `id`: Primary key
-- `product_key`: Unique product identifier
-- `side`, `strike_price`, `expires`: Product details
-- `premium`: Premium price at timestamp
-- `timestamp`: Record timestamp 
+MIT License - see LICENSE file for details

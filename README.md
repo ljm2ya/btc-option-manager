@@ -21,7 +21,11 @@ A Bitcoin options seller API built with Rust and Actix-web, implementing Black-S
 3. **Or install dependencies manually:**
    - See [Installation Guide](docs/INSTALL.md) for platform-specific setup
 
-The API will be available at `http://localhost:8080`
+The API will be available at:
+- Local: `http://localhost:8080`
+- External: `http://<your-ip>:8080`
+
+**Note**: For external access, ensure firewall allows ports 8080 and 8081
 
 ## 📊 Core Features
 

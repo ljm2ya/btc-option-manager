@@ -304,7 +304,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/topGainers").route(web::get().to(get_top_gainers)))
             .service(web::resource("/topVolume").route(web::get().to(get_top_volume)))
     })
-    .bind("127.0.0.1:8080")?
+    .bind("0.0.0.0:8080")?
     .run();
 
     // Start the mock API server

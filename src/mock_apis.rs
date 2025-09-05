@@ -30,7 +30,7 @@ pub async fn mock_server() -> std::io::Result<()> {
         App::new()
             .service(web::resource("/iv").route(web::get().to(get_iv)))
     })
-    .bind("127.0.0.1:8081")?
+    .bind("0.0.0.0:8081")?
     .run()
     .await
 } 

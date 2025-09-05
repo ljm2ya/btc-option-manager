@@ -39,8 +39,16 @@ fi
 echo -e "\n${YELLOW}Fetching available options from /optionsTable...${NC}"
 OPTIONS_RESPONSE=$(curl -s "${BASE_URL}/optionsTable")
 
+# Check if response is an error
+if echo "$OPTIONS_RESPONSE" | grep -q '"error"'; then
+    echo -e "${RED}❌ Error from server:${NC}"
+    echo "$OPTIONS_RESPONSE" | jq . 2>/dev/null || echo "$OPTIONS_RESPONSE"
+    echo -e "\n${YELLOW}Make sure the price oracle is running on localhost:50051${NC}"
+    exit 1
+fi
+
 if [ -z "$OPTIONS_RESPONSE" ] || [ "$OPTIONS_RESPONSE" = "[]" ]; then
-    echo -e "${RED}❌ Failed to fetch options or empty response${NC}"
+    echo -e "${RED}❌ Empty options response${NC}"
     exit 1
 fi
 
@@ -60,26 +68,38 @@ from datetime import datetime, timedelta
 BASE_URL = "http://localhost:8080"
 DB_FILE = "contracts.db"
 
-# Get options data
+# Get options data from environment variable (passed from bash)
+import os
+options_json = os.environ.get('OPTIONS_RESPONSE', '[]')
+
 try:
-    options_json = subprocess.check_output(["curl", "-s", f"{BASE_URL}/optionsTable"])
     options = json.loads(options_json)
 except Exception as e:
-    print(f"Error fetching options: {e}")
+    print("Error parsing options JSON: " + str(e))
+    exit(1)
+
+# Validate options is a list
+if not isinstance(options, list):
+    print("Error: Options response is not a list. Got: " + str(type(options)))
+    print("Response content: " + str(options)[:200])
     exit(1)
 
 if not options:
     print("No options available")
     exit(1)
 
-print(f"Found {len(options)} available options")
+print("Found " + str(len(options)) + " available options")
 
 # Separate calls and puts
-calls = [opt for opt in options if opt['side'] == 'Call']
-puts = [opt for opt in options if opt['side'] == 'Put']
+calls = [opt for opt in options if opt.get('side') == 'Call']
+puts = [opt for opt in options if opt.get('side') == 'Put']
 
-print(f"  - {len(calls)} Call options")
-print(f"  - {len(puts)} Put options")
+print("  - " + str(len(calls)) + " Call options")
+print("  - " + str(len(puts)) + " Put options")
+
+if not calls or not puts:
+    print("Error: Need both Call and Put options to proceed")
+    exit(1)
 
 # Contract creation function
 def create_contract(option, quantity_factor, days_ago):
@@ -102,11 +122,11 @@ def create_contract(option, quantity_factor, days_ago):
         "7d": 604800
     }
     
-    expire_seconds = expire_map.get(option['expire'], 86400)
+    expire_seconds = expire_map.get(option.get('expire', '1d'), 86400)
     expires_timestamp = int((datetime.now() + timedelta(seconds=expire_seconds)).timestamp())
     
     # Use the premium from options table
-    premium = option['premium']
+    premium = option.get('premium', 0.001)
     
     # Create contract data
     contract_data = {
@@ -117,7 +137,8 @@ def create_contract(option, quantity_factor, days_ago):
         "premium": premium
     }
     
-    print(f"\n  Creating {option['side']} - Strike: ${option['strike_price']}, Qty: {quantity:.8f}, Premium: {premium:.8f}")
+    print("\n  Creating " + option['side'] + " - Strike: $" + str(option['strike_price']) + 
+          ", Qty: " + format(quantity, '.8f') + ", Premium: " + format(premium, '.8f'))
     
     # Create contract via API
     try:
@@ -125,7 +146,7 @@ def create_contract(option, quantity_factor, days_ago):
             "curl", "-s", "-w", "\n%{http_code}", "-X", "POST",
             "-H", "Content-Type: application/json",
             "-d", json.dumps(contract_data),
-            f"{BASE_URL}/contract"
+            BASE_URL + "/contract"
         ], capture_output=True, text=True)
         
         lines = response.stdout.strip().split('\n')
@@ -133,35 +154,42 @@ def create_contract(option, quantity_factor, days_ago):
         body = '\n'.join(lines[:-1]) if len(lines) > 1 else ""
         
         if status_code == "200":
-            print(f"    ✓ Created successfully")
+            print("    ✓ Created successfully")
             
             # Backdate if needed
             if days_ago > 0:
                 created_at = int((datetime.now() - timedelta(days=days_ago)).timestamp())
                 try:
+                    # Update created_at in contracts table
                     subprocess.run([
                         "sqlite3", DB_FILE,
-                        f"UPDATE contracts SET created_at = {created_at} WHERE id = (SELECT MAX(id) FROM contracts);"
+                        "UPDATE contracts SET created_at = " + str(created_at) + 
+                        " WHERE id = (SELECT MAX(id) FROM contracts);"
                     ], capture_output=True)
                     
                     # Also add to premium_history with backdated timestamp
-                    product_key = f"{option['side']}-{int(option['strike_price'] * 100)}-{expires_timestamp}"
+                    product_key = option['side'] + "-" + str(int(option['strike_price'] * 100)) + "-" + str(expires_timestamp)
+                    premium_str = format(premium, '.8f')
+                    
                     subprocess.run([
                         "sqlite3", DB_FILE,
-                        f"INSERT INTO premium_history (product_key, side, strike_price_cents, expires, premium_str, timestamp) VALUES ('{product_key}', '{option['side']}', {int(option['strike_price'] * 100)}, {expires_timestamp}, '{premium:.8f}', {created_at});"
+                        "INSERT INTO premium_history (product_key, side, strike_price_cents, expires, premium_str, timestamp) " +
+                        "VALUES ('" + product_key + "', '" + option['side'] + "', " + 
+                        str(int(option['strike_price'] * 100)) + ", " + str(expires_timestamp) + 
+                        ", '" + premium_str + "', " + str(created_at) + ");"
                     ], capture_output=True)
                     
-                    print(f"    ✓ Backdated to {days_ago} days ago")
+                    print("    ✓ Backdated to " + str(days_ago) + " days ago")
                 except:
                     pass
             
             return True
         else:
-            print(f"    ✗ Failed: {body}")
+            print("    ✗ Failed: " + body)
             return False
             
     except Exception as e:
-        print(f"    ✗ Error: {e}")
+        print("    ✗ Error: " + str(e))
         return False
 
 # Contract specifications with varied parameters
@@ -188,19 +216,19 @@ contract_specs = [
 # Create contracts
 success_count = 0
 for i, spec in enumerate(contract_specs):
-    print(f"\nContract {i+1}/10:")
+    print("\nContract " + str(i+1) + "/10:")
     
     # Select appropriate option
     if spec["type"] == "put":
         # Vary the put selection
         if i < 4:
-            option = random.choice(puts[:10])  # Near the money
+            option = random.choice(puts[:min(10, len(puts))])  # Near the money
         else:
             option = random.choice(puts)  # Any put
     else:
         # Vary the call selection  
         if i < 4:
-            option = random.choice(calls[:10])  # Near the money
+            option = random.choice(calls[:min(10, len(calls))])  # Near the money
         else:
             option = random.choice(calls)  # Any call
     
@@ -210,26 +238,31 @@ for i, spec in enumerate(contract_specs):
     # Small delay to avoid overwhelming the server
     time.sleep(0.1)
 
-print(f"\n✓ Successfully created {success_count}/10 contracts")
+print("\n✓ Successfully created " + str(success_count) + "/10 contracts")
 
 # Show summary
 print("\nFetching created contracts...")
 try:
-    contracts_json = subprocess.check_output(["curl", "-s", f"{BASE_URL}/contracts"])
-    contracts = json.loads(contracts_json)
+    contracts_response = subprocess.check_output(["curl", "-s", BASE_URL + "/contracts"])
+    contracts = json.loads(contracts_response)
     
-    print(f"\nTotal contracts in database: {len(contracts)}")
+    print("\nTotal contracts in database: " + str(len(contracts)))
     
     # Show last 10 contracts
     print("\nLast 10 contracts:")
     for contract in contracts[-10:]:
         created_date = datetime.fromtimestamp(contract['created_at']).strftime('%Y-%m-%d')
-        print(f"  {contract['side']} | Strike: ${contract['strike_price']} | Qty: {contract['quantity']} | Premium: {contract['premium']} | Created: {created_date}")
+        print("  " + contract['side'] + " | Strike: $" + str(contract['strike_price']) + 
+              " | Qty: " + str(contract['quantity']) + " | Premium: " + str(contract['premium']) + 
+              " | Created: " + created_date)
         
 except Exception as e:
-    print(f"Error fetching contracts: {e}")
+    print("Error fetching contracts: " + str(e))
 
 PYTHON_SCRIPT
+
+# Export the OPTIONS_RESPONSE for Python script
+export OPTIONS_RESPONSE="$OPTIONS_RESPONSE"
 
 # Show final summary
 echo -e "\n${BLUE}========================================${NC}"
@@ -251,7 +284,7 @@ if command -v sqlite3 &> /dev/null; then
     echo -e "${BLUE}Date range:${NC} $DATE_RANGE"
     
     echo -e "\n${YELLOW}Strike price distribution:${NC}"
-    sqlite3 "$DB_FILE" "SELECT strike_price, COUNT(*) as count FROM contracts GROUP BY strike_price ORDER BY strike_price;" 2>/dev/null || echo "N/A"
+    sqlite3 "$DB_FILE" "SELECT '$' || CAST(strike_price AS INTEGER) AS price, COUNT(*) as count FROM contracts GROUP BY strike_price ORDER BY strike_price;" 2>/dev/null || echo "N/A"
 fi
 
 echo -e "\n${GREEN}✓ Done! Database '$DB_FILE' has been populated with test contracts.${NC}"

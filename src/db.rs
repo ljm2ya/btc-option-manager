@@ -18,22 +18,19 @@ pub fn create_pool() -> Result<DbPool, Box<dyn std::error::Error>> {
 
 // Initialize the SQLite database and creates the tables if they don't exist.
 pub fn init_db(conn: &Connection) -> Result<()> {
-    // Create contracts table with timestamp
+    // Create contracts table with string storage for floats
     conn.execute(
         "CREATE TABLE IF NOT EXISTS contracts (
             id INTEGER PRIMARY KEY,
             side TEXT NOT NULL,
-            strike_price REAL NOT NULL,
-            quantity REAL NOT NULL,
+            strike_price_cents INTEGER NOT NULL,
+            quantity_str TEXT NOT NULL,
             expires INTEGER NOT NULL,
-            premium REAL NOT NULL,
+            premium_str TEXT NOT NULL,
             created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         )",
         [],
     )?;
-    
-    // Add created_at column to existing contracts table if it doesn't exist
-    let _ = conn.execute("ALTER TABLE contracts ADD COLUMN created_at INTEGER DEFAULT (strftime('%s', 'now'))", []);
     
     // Create premium history table for tracking price movements
     conn.execute(
@@ -41,9 +38,9 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY,
             product_key TEXT NOT NULL,
             side TEXT NOT NULL,
-            strike_price REAL NOT NULL,
+            strike_price_cents INTEGER NOT NULL,
             expires INTEGER NOT NULL,
-            premium REAL NOT NULL,
+            premium_str TEXT NOT NULL,
             timestamp INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             UNIQUE(product_key, timestamp)
         )",

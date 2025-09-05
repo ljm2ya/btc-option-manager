@@ -9,7 +9,7 @@ pub mod oracle {
 }
 
 use oracle::oracle_service_client::OracleServiceClient;
-use oracle::{GetPriceRequest, HealthRequest};
+use oracle::{GetPriceRequest, GetPriceResponse, HealthRequest};
 
 #[derive(Clone)]
 pub struct PriceOracle {
@@ -95,6 +95,12 @@ impl PriceOracle {
     }
     
     async fn fetch_price_from_oracle(&self) -> Result<f64, Box<dyn std::error::Error>> {
+        let response = self.get_detailed_price().await?;
+        Ok(response.aggregated_price)
+    }
+    
+    /// Get detailed price information including individual exchange prices
+    pub async fn get_detailed_price(&self) -> Result<GetPriceResponse, Box<dyn std::error::Error>> {
         let mut client = self.grpc_client.clone();
         
         let request = tonic::Request::new(GetPriceRequest {
@@ -112,6 +118,6 @@ impl PriceOracle {
             return Err("No oracle sources available for price data".into());
         }
         
-        Ok(price_data.aggregated_price)
+        Ok(price_data)
     }
 }

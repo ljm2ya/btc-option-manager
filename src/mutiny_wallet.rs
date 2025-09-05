@@ -128,14 +128,25 @@ pub struct WalletBalance {
 pub struct MutinyWallet {
     client: Client,
     base_url: String,
+    #[allow(dead_code)]
     network: Network,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Network {
     Mainnet,
     Testnet,
     Signet,
+}
+
+impl std::fmt::Display for Network {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Network::Mainnet => write!(f, "mainnet"),
+            Network::Testnet => write!(f, "testnet"),
+            Network::Signet => write!(f, "signet"),
+        }
+    }
 }
 
 impl MutinyWallet {

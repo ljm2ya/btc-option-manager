@@ -4,8 +4,10 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 // Defines the request structure for the '/iv' endpoint.
 #[derive(serde::Deserialize)]
 struct IvRequest {
+    #[allow(dead_code)]
     side: String,
     strike_price: f64,
+    #[allow(dead_code)]
     expire: String,
 }
 

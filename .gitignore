@@ -1,19 +1,145 @@
 # Rust build artifacts
-/target
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file for library projects (comment out if this is an executable)
+# Cargo.lock
 
 # Local environment configuration
 .env
+.envrc
+.env.local
+.env.*.local
 
-# Database file
-contracts.db
+# Database files
 *.db
+*.db.*
 *.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
 
-# Editor and OS specific files
+# Backup files
+*.bak
+*.backup
+*.orig
+*.rej
+*.old
+*.save
+*~
+
+# Log files
+*.log
+*.log.*
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*.cache
+tmp/
+temp/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Editor and IDE files
 .vscode/
 .idea/
-*.swp
-*~
-.DS_Store
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+*.iml
+.settings/
+.history
+.ionide
+*.code-workspace
 
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Python cache (for test scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.pyc
+
+# Shell script artifacts
+*.pid
+*.seed
+*.pid.lock
+
+# Test artifacts
+tarpaulin-report.html
+cobertura.xml
+coverage/
+*.coverage
+.coverage.*
+
+# Documentation build artifacts
+/site
+/book
+target/doc/
+
+# Package files
+*.tar.gz
+*.zip
+*.deb
+*.rpm
+
+# Nix result symlink
+/result
+/result-*
+
+# Tool-specific
 .serena/
+.morphllm/
+.claudeDocs/
+
+# Binary executables (except Cargo-built ones in target/)
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Ignore any local scripts that shouldn't be committed
+local-*.sh
+test-local-*.sh
+debug-*.sh
+
+# Profiling data
+perf.data
+perf.data.old
+*.profdata
+*.profraw
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Misc development files
+*.patch
+TODO.txt
+NOTES.txt
+scratch/
+playground/
